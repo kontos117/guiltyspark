@@ -1,0 +1,41 @@
+#!100
+
+[0 $15 = 1000 *] INIT {
+    *[1] SET_INIT !9(1);
+    *[1] AIMBOT_ON !11(1);
+    *[1] PANIC_RESET !10(0);
+}
+
+*[$24 0,1 < 200 *] SHIELD_LOW {
+    *[1] PANIC_ON !10(1);
+}
+
+*[$24 0,5 > 200 *] SHIELD_HIGH {
+    *[1] PANIC_OFF !10(0);
+}
+
+[$16 100 *] RETREAT_AND_SHOOT {
+    *[1] LOCK_ENEMY !1($9);
+    *[1] ENABLE_STRAFE !24(1);
+
+    *[1] ESCAPE !100($9);
+
+    [0,5] SET_TARGET !1($9);
+    #*[$13] FIRE !6(100);
+}
+
+[10] RUN {
+    *[1] DISABLE_STRAFE !24(0);
+	[0,5] SET_TARGET !1($9);
+	*[$13] SHOOT_AT_THEM {
+		#[1] MOUSE1 !6(100);
+	}
+    *[$22 8 >] CHASE_MODE {
+        #*[1] DISABLE_STRAFE !24(0);
+        *[1] GO_TO_ENEMY !3($9);
+    }
+    *[$22 8 <] COMBAT_STRAFE {
+        #*[1] ENABLE_STRAFE !24(1);
+        *[1] DODGE !2($35);
+    } 
+}

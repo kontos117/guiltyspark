@@ -52,7 +52,9 @@ namespace HaloBot
             ACTION = 35,
             SWITCH_GRENADE_TYPE = 36,
             
-            CHAT = 37
+            CHAT = 37,
+
+            EVADE = 100
         }
 
         public enum DATA_SOURCES : int

@@ -194,6 +194,12 @@ namespace HaloBot
                         true);
                     break;
 
+                case (int)AIHandler.FID.EVADE:
+                    aiHandler.form1.nav.WalkTo(evade((int)parameter),
+                        false);
+                    break;
+
+
                 //INPUT
                 case (int)AIHandler.FID.MOUSE1:
                     aiHandler.form1.nav.Click(true, (int)parameter);
@@ -327,6 +333,32 @@ namespace HaloBot
                 default:
                     break;
             }
+        }
+        private Structures.FLOAT3 evade(int enemyIndex)
+        {
+            // 1. Παίρνουμε τις θέσεις από το form1.gameState
+            // Σημείωση: Μέσα στο AIHandler, το 'form1' είναι προσβάσιμο απευθείας
+            var myPos = aiHandler.form1.gameState.LocalPosition;
+            var enemyPos = aiHandler.form1.gameState.PlayerPosition(enemyIndex);
+
+            // 2. Υπολογίζουμε το διάνυσμα φυγής (Εγώ - Εχθρός)
+            var escapeVector = myPos - enemyPos;
+
+            // 3. Υπολογίζουμε την απόσταση (Magnitude)
+            float dist = (float)Math.Sqrt(escapeVector.X * escapeVector.X +
+                                          escapeVector.Y * escapeVector.Y +
+                                          escapeVector.Z * escapeVector.Z);
+
+            // Ασφάλεια: Αν η απόσταση είναι 0 (είμαστε ακριβώς πάνω του), επιστρέφουμε τη θέση μας
+            if (dist <= 0) return myPos;
+
+            // 4. Προεκτείνουμε το διάνυσμα κατά 15 μέτρα
+            float retreatDistance = 15.0f;
+
+            // Τύπος: ΘέσηΜου + (Διάνυσμα * (ΑπόστασηΠουΘελω / ΤρέχουσαΑπόσταση))
+            var targetPos = myPos + (escapeVector * (retreatDistance / dist));
+
+            return targetPos;
         }
 
         public override string ToString()
