@@ -21,14 +21,14 @@
     *[1] ESCAPE !100($9);
 
     [0,5] SET_TARGET !1($9);
-    #*[$13] FIRE !6(100);
+    *[$13] FIRE !6(100);
 }
 
 [10] RUN {
     *[1] DISABLE_STRAFE !24(0);
 	[0,5] SET_TARGET !1($9);
 	*[$13] SHOOT_AT_THEM {
-		#[1] MOUSE1 !6(100);
+		[1] MOUSE1 !6(100);
 	}
     *[$22 8 >] CHASE_MODE {
         #*[1] DISABLE_STRAFE !24(0);
