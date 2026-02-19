@@ -1,10 +1,7 @@
 ﻿using System;
-using System.Timers;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
-using System.Diagnostics;
+using System.Timers;
 
 namespace HaloBot
 {
@@ -54,7 +51,9 @@ namespace HaloBot
             
             CHAT = 37,
 
-            EVADE = 100
+            EVADE = 100,
+
+            ENABLE_RL = 101
         }
 
         public enum DATA_SOURCES : int
@@ -137,6 +136,32 @@ namespace HaloBot
         private Form1.WriteAIDelegate AIOut;
         private Form1.ToggleAIButtonsDelegate ToggleDel;
 
+
+        // Q-Learning Variables
+        private bool rlEnabled = false;
+        private double[,] qTable;
+        private int currentStateIndex;
+        private int lastActionIndex;
+        private float lastMyHealth;
+        private float lastEnemyHealth;
+
+        // Hyperparameters
+        private double alpha = 0.1;   // Learning Rate
+        private double gamma = 0.9;   // Discount Factor
+        private double epsilon = 0.2; // Exploration Rate (20% τυχαίες κινήσεις στην αρχή)
+
+        // UPDATED: Νέα μεγέθη βάσει των οδηγιών σου
+        private const int NUM_STATES = 12; // 4 Dist * 3 MyHP
+        private const int NUM_ACTIONS = 3; // 0:Attack, 1:Retreat, 2:GoToHealth
+
+        private int tickCounter = 0;
+        private const int DECISION_INTERVAL = 5;
+
+        private int[] healthPackNodes = { 236, 198, 166 };
+        private float tickPrevEnemyHP = 1.0f;
+
+        private int killCount = 0; // ΠΡΟΣΘΗΚΗ: Μετρητής για τα kills
+
         public AIHandler(Form1 form, Form1.WriteAIDelegate del, Form1.ToggleAIButtonsDelegate del2)
         {
             this.AIOut = del;
@@ -190,6 +215,7 @@ namespace HaloBot
             ready = true;
             aiTimer.Start();
             aiIsRunning = true;
+            killCount = 0;
         }
 
         public void Stop()
@@ -202,6 +228,7 @@ namespace HaloBot
             form1.Invoke(ToggleDel, false);
             form1.gameState.BSPloaded = false;
             aiIsRunning = false;
+            DisableRL();
         }
 
         public void ChangeInterval(int ticks)
@@ -220,6 +247,23 @@ namespace HaloBot
 
 
         //~~~~~~SEPARATE THREAD, cross thread ops may be needed~~~~~~
+        //     void aiTimer_Tick(object sender, EventArgs e)
+        //     {
+        //         if (!ready)
+        //         {
+        //             WriteAICrossThread(
+        //                 "WARNING: AI cycle taking longer to perform than refresh interval (increase interval)", true);
+        //             return;
+        //         }
+
+        //ready = false;
+        //         random = r.Next();
+        //         WriteAICrossThread("Tick: " + random.ToString("X"), true);
+        //         root.Execute();
+        //ready = true;
+
+
+        //     }
         void aiTimer_Tick(object sender, EventArgs e)
         {
             if (!ready)
@@ -229,11 +273,89 @@ namespace HaloBot
                 return;
             }
 
-			ready = false;
+            // Πάντα ανανεώνουμε τα βασικά δεδομένα (θέση, εχθροί)
             random = r.Next();
-            WriteAICrossThread("Tick: " + random.ToString("X"), true);
-            root.Execute();
-			ready = true;
+            RequestData((int)DATA_SOURCES.PLAYER_X);
+            int targetIndex = (int)RequestData((int)DATA_SOURCES.CLOSEST_ENEMY);
+            float currentEnemyHP = form1.gameState.PlayerHealth(targetIndex);
+
+            var myPos = form1.gameState.LocalPosition;
+            var enemyPos = form1.gameState.PlayerPosition(targetIndex);
+
+
+            float dist = Navigation.Distance3D(myPos, enemyPos);
+
+            // --- FAST RELOAD REFLEX ---
+          
+            // Ελέγχουμε ΜΟΝΟ τη ζωή (Health), γιατί αυτή μηδενίζεται όταν πεθαίνει
+            float currentEnemyHealthOnly = form1.gameState.PlayerHealth(targetIndex);
+
+            // Αν στο προηγούμενο tick είχε ζωή και τώρα πήγε στο 0 (ή κάτω από 0)
+            if (tickPrevEnemyHP > 0.0f && currentEnemyHealthOnly <= 0.0f)
+            {
+                form1.nav.Press((ushort)Navigation.DIK.DIK_R, 35, true);
+                //form1.WriteAI("Fast Reflex: Enemy Died -> Reloading!");
+            }
+
+            // Αποθηκεύουμε το σκέτο Health για το επόμενο tick
+            tickPrevEnemyHP = currentEnemyHealthOnly;
+          
+
+            if (rlEnabled)
+            {
+                // 1. Συνεχής Διαχείριση Όπλου (Αυτό πρέπει να γίνεται συνέχεια)
+                ManageWeaponRange(dist);
+
+                // 2. Λήψη Απόφασης (RL) μόνο κάθε 5 ticks
+                if (tickCounter % DECISION_INTERVAL == 0)
+                {
+                    int newState = GetDiscreteState(targetIndex);
+                    double reward = CalculateReward(targetIndex);
+
+                    // Q-Learning Update
+                    double maxQNext = -9999;
+                    for (int a = 0; a < NUM_ACTIONS; a++)
+                        if (qTable[newState, a] > maxQNext) maxQNext = qTable[newState, a];
+
+                    double oldQ = qTable[currentStateIndex, lastActionIndex];
+                    qTable[currentStateIndex, lastActionIndex] = oldQ + alpha * (reward + gamma * maxQNext - oldQ);
+
+                    // Επιλογή Επόμενης Ενέργειας (Epsilon Greedy)
+                    int nextAction = 0;
+                    if (r.NextDouble() < epsilon)
+                        nextAction = r.Next(0, NUM_ACTIONS);
+                    else
+                    {
+                        double maxQ = -9999;
+                        for (int a = 0; a < NUM_ACTIONS; a++)
+                            if (qTable[newState, a] > maxQ)
+                            {
+                                maxQ = qTable[newState, a];
+                                nextAction = a;
+                            }
+                    }
+
+                    // Αποθήκευση της νέας ενέργειας για να εκτελείται στα επόμενα ticks
+                    lastActionIndex = nextAction;
+                    currentStateIndex = newState;
+
+                    // Debug για να βλέπουμε την αλλαγή
+                    WriteAICrossThread($"RL Step: S={newState} A={nextAction} R={reward:F1} Eps={epsilon:F2}", true);
+                }
+
+                // 3. Εκτέλεση της Τρέχουσας Ενέργειας (Συνεχόμενα)
+                // Εκτελούμε την ενέργεια που αποφασίστηκε στο τελευταίο interval
+                ExecuteRLAction(lastActionIndex, targetIndex);
+
+                tickCounter++;
+            }
+            else
+            {
+                WriteAICrossThread("Tick: " + random.ToString("X"), true);
+                root.Execute();
+            }
+
+            ready = true;
         }
 
         //-------------------------------------------------------------
@@ -843,6 +965,378 @@ namespace HaloBot
             p.Concurrent = concurrent;
 
             return p;
+        }
+
+        public Structures.FLOAT3 Evade(int enemyIndex)
+        {
+            // 1. Παίρνουμε τις θέσεις από το form1.gameState
+            // Σημείωση: Μέσα στο AIHandler, το 'form1' είναι προσβάσιμο απευθείας
+            var myPos = form1.gameState.LocalPosition;
+            var enemyPos = form1.gameState.PlayerPosition(enemyIndex);
+
+            // 2. Υπολογίζουμε το διάνυσμα φυγής (Εγώ - Εχθρός)
+            var escapeVector = myPos - enemyPos;
+
+            // 3. Υπολογίζουμε την απόσταση (Magnitude)
+            float dist = (float)Math.Sqrt(escapeVector.X * escapeVector.X +
+                                          escapeVector.Y * escapeVector.Y +
+                                          escapeVector.Z * escapeVector.Z);
+
+            // Ασφάλεια: Αν η απόσταση είναι 0 (είμαστε ακριβώς πάνω του), επιστρέφουμε τη θέση μας
+            if (dist <= 0) return myPos;
+
+            // 4. Προεκτείνουμε το διάνυσμα κατά 15 μέτρα
+            float retreatDistance = 15.0f;
+
+            // Τύπος: ΘέσηΜου + (Διάνυσμα * (ΑπόστασηΠουΘελω / ΤρέχουσαΑπόσταση))
+            var targetPos = myPos + (escapeVector * (retreatDistance / dist));
+
+            return targetPos;
+        }
+
+        // 1. Ενεργοποίηση & Φόρτωση
+        public void EnableRL(bool enable)
+        {
+            rlEnabled = enable;
+            form1.nav.aimbot.Start();
+            if (rlEnabled)
+            {
+                if (qTable == null)
+                {
+                    qTable = new double[NUM_STATES, NUM_ACTIONS];
+                    LoadQTable(); // Προσπάθεια φόρτωσης προηγούμενης γνώσης
+                }
+                form1.WriteAI("RL Mode Enabled: 12 States, 3 Actions.");
+            }
+        }
+        public void DisableRL()
+        {
+            rlEnabled = false;
+            SaveQTable();
+            form1.WriteAI("RL Disabled");
+        }
+
+        // 2. Υπολογισμός Κατάστασης (Discretization)
+        private int GetDiscreteState(int enemyIndex)
+        {
+            var myPos = form1.gameState.LocalPosition;
+            var enemyPos = form1.gameState.PlayerPosition(enemyIndex);
+            double dist = Navigation.Distance3D(myPos, enemyPos);
+
+            // 1. Distance State (4 καταστάσεις)
+            int distState;
+            if (dist < 1.0) distState = 0;
+            else if (dist < 5.0) distState = 1;
+            else if (dist < 20.0) distState = 2;
+            else distState = 3;
+
+            // 2. My Health State (3 καταστάσεις)
+            int myHpState;
+            if (form1.gameState.LocalHealth < 0.7)
+                myHpState = 0; // HURT
+            else if (form1.gameState.LocalShield < 0.5)
+                myHpState = 1; // LOW SHIELD
+            else
+                myHpState = 2; // GOOD
+
+            // ΝΕΟΣ ΤΥΠΟΣ: (Distance * 3) + MyState
+            // Δεν μας νοιάζει πια ο εχθρός
+            return (distState * 3) + myHpState;
+        }
+
+        // 3. Υπολογισμός Ανταμοιβής - ΔΕΧΕΤΑΙ enemyIndex
+        private double CalculateReward(int enemyIndex)
+        {
+            double currentMyHealth = form1.gameState.LocalHealth;
+            double currentEnemyHealth = form1.gameState.PlayerHealth(enemyIndex);
+
+            double currentMyHP = currentMyHealth + form1.gameState.LocalShield;
+            double currentEnemyHP = currentEnemyHealth + form1.gameState.PlayerShield(enemyIndex);
+
+            var myPos = form1.gameState.LocalPosition;
+            var enemyPos = form1.gameState.PlayerPosition(enemyIndex);
+            double dist = Navigation.Distance3D(myPos, enemyPos);
+
+            double damageDealt = lastEnemyHealth - currentEnemyHP;
+            double damageTaken = lastMyHealth - currentMyHP;
+
+            // Βασικό Reward (Ζημιά)
+            double reward = (damageDealt * 2.0) - (damageTaken * 1.5);
+
+            // --- DYNAMIC LIVING PENALTY ---
+            // Αντικαθιστούμε το σταθερό -1.0 με αυτό το block:
+            // reward -= 1.0;
+
+            // --- ΕΙΔΙΚΟ REWARD ΓΙΑ HEALTH PACK ---
+            // Αν η τελευταία ενέργεια ήταν "GoToHealth" (Index 2)
+            if (lastActionIndex == 2)
+            {
+                // ΔΙΟΡΘΩΣΗ: Ελέγχουμε το LocalHealth (Ζωή), όχι το Shield.
+                // Αν η ζωή είναι πεσμένη (< 0.9 σημαίνει ότι έχουμε χάσει έστω λίγο), επιβραβεύουμε.
+                // Μπορείς να βάλεις < 0.5 αν θες να πηγαίνει μόνο στα πολύ δύσκολα.
+                bool healthIncreased = currentMyHealth > (lastMyHealth + 0.1);
+                if (healthIncreased)
+                {
+                    reward += 20.0;
+                }
+            }
+
+            // Περίπτωση 1: Camping (Μακριά & Ασφαλής) -> Τεράστια Ποινή
+            if (dist > 20.0 && form1.gameState.LocalShield > 0.9)
+            {
+                reward -= 2.0;
+            }
+            // Περίπτωση 2: Combat (Κοντά ή τραυματισμένος) -> Μικρή Ποινή
+            else
+            {
+                reward -= 0.2; // Μικρότερο από το παλιό 1.0 για να μην "αυτοκτονεί" εύκολα
+            }
+
+            // Kill / Death detection
+            bool episodeEnded = false;
+
+            if (currentEnemyHealth > lastEnemyHealth && lastEnemyHealth < 0.1)
+            {
+                reward += 200.0; // Αυξήσαμε λίγο το Kill Reward για να ισοσταθμίσει τα -5αρια
+                episodeEnded = true;
+                //form1.nav.Press((ushort)Navigation.DIK.DIK_R, 35, true);
+                // --- ΠΡΟΣΘΗΚΗ ΓΙΑ RECORDING (F1 ΚΑΘΕ 10 KILLS) ---
+                killCount++; // Αυξάνουμε τα kills κατά 1
+
+                // Αν τα kills διαιρούνται ακριβώς με το 10
+                if (killCount % 10 == 0)
+                {
+                    // Το 5000 είναι τα χιλιοστά του δευτερολέπτου (5 δευτερόλεπτα).
+                    // Σημείωση: Αν σου βγάλει σφάλμα ότι δεν υπάρχει το "DIK_F1", 
+                    // αντικατέστησε το (ushort)Navigation.DIK.DIK_F1 με το (ushort)0x3B
+                    form1.nav.Press((ushort)Navigation.DIK.DIK_F1, 5000, true);
+                    form1.WriteAI($"Scoreboard! Pressing F1 for 5 seconds.");
+                }
+            }
+            if (currentMyHealth > lastMyHealth && lastMyHealth < 0.1)
+            {
+                reward -= 50.0; // Death Penalty
+                episodeEnded = true;
+            }
+
+            // Epsilon Decay
+            if (episodeEnded)
+            {
+                if (epsilon > 0.05)
+                {
+                    epsilon *= 0.98;
+                }
+                SaveQTable();
+            }
+
+            lastMyHealth = (float)currentMyHealth;
+            lastEnemyHealth = (float)currentEnemyHealth;
+
+            return reward;
+        }
+
+        // 4. Εκτέλεση Ενεργειών - ΔΕΧΕΤΑΙ enemyIndex
+        private void ExecuteRLAction(int actionIndex, int enemyIndex)
+        {
+            // 1. Στόχευση
+            form1.nav.aimbot.SetTarget(enemyIndex, true);
+
+            // 2. Έλεγχος: Βλέπουμε τον εχθρό; (Κόκκινο Στόχαστρο)
+            // Το HasClearShot διαβάζει τη μνήμη για να δει αν το στόχαστρο είναι κόκκινο
+            bool canShoot = form1.gameState.HasClearShot;
+
+            switch (actionIndex)
+            {
+                case 0: // ATTACK
+
+                    var enemyPos = form1.gameState.PlayerPosition(enemyIndex);
+                    form1.nav.WalkTo(enemyPos, false);
+
+                    if (Navigation.Distance3D(form1.gameState.LocalPosition, enemyPos) < 1.0)
+                    {
+                        form1.nav.Press((ushort)Navigation.DIK.DIK_F, 35, true);
+                    } else if (canShoot)
+                    {
+                        form1.nav.Click(true, 50);
+                        if (r.Next(0, 100) == 0)
+                        {
+                            form1.nav.Click(false, 50);
+                        }
+                    }
+                    break;
+
+                case 1: // RETREAT
+                    var fleePos = Evade(enemyIndex);
+                    form1.nav.WalkTo(fleePos, false);
+
+                    // Και στην υποχώρηση, πυροβολούμε μόνο αν βλέπουμε
+                    if (canShoot)
+                    {
+                        form1.nav.Click(true, 50);
+                    }
+                    break;
+
+                case 2: // GO TO HEALTH PACK (ΝΕΟ)
+                        // Βρίσκουμε το κοντινότερο πακέτο
+                    var hpPos = GetClosestHealthPackPos();
+
+                    // Πηγαίνουμε εκεί (εδώ ίσως θες StrafeMode = false για να τρέχει πιο γρήγορα, 
+                    // αλλά αν θες να πυροβολεί καθώς πάει, άστο true).
+                    form1.nav.WalkTo(hpPos, false);
+
+                    // Αν βλέπουμε εχθρό στο δρόμο, ρίχνουμε
+                    if (canShoot)
+                    {
+                        form1.nav.Click(true, 50);
+                    }
+                    break;
+            }
+        }
+        private void ManageWeaponRange(float dist)
+        {
+            // Ελέγχουμε ποιο όπλο κρατάμε (True = Primary, False = Secondary)
+            // Χρησιμοποιούμε το Property που υπάρχει ήδη στο MemoryReaderWriter
+            bool holdingPrimary = form1.gameState.PrimaryWeapon;
+
+            // ΚΑΝΟΝΑΣ 1: Αν είμαστε Κοντά (< 5m) θέλουμε Secondary (AR)
+            if (dist < 5.0f && !holdingPrimary)
+            {
+                // Πατάμε το κουμπί αλλαγής όπλου (TAB)
+                form1.nav.Press((ushort)Navigation.DIK.DIK_TAB, 35, true);
+            }
+            // ΚΑΝΟΝΑΣ 2: Αν είμαστε Μακριά (> 5m) θέλουμε Primary (Pistol/Sniper)
+            else if (dist >= 5.0f && holdingPrimary)
+            {
+                form1.nav.Press((ushort)Navigation.DIK.DIK_TAB, 35, true);
+            }
+        }
+
+        private void SaveQTable()
+        {
+            if (qTable == null) return;
+            try
+            {
+                using (StreamWriter sw = new StreamWriter("qtable.csv"))
+                {
+                    // ΠΡΟΣΘΗΚΗ: Header με State
+                    sw.WriteLine("State,Attack,Retreat,Health");
+
+                    for (int i = 0; i < NUM_STATES; i++)
+                    {
+                        // Παίρνουμε την περιγραφή
+                        string stateName = GetStateDescription(i);
+
+                        // Ξεκινάμε τη γραμμή με το όνομα
+                        string line = stateName + ",";
+
+                        for (int j = 0; j < NUM_ACTIONS; j++)
+                        {
+                            line += qTable[i, j].ToString(System.Globalization.CultureInfo.InvariantCulture) + (j < NUM_ACTIONS - 1 ? "," : "");
+                        }
+                        sw.WriteLine(line);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void LoadQTable()
+        {
+            if (!File.Exists("qtable.csv")) return;
+            try
+            {
+                string[] lines = File.ReadAllLines("qtable.csv");
+                if (lines.Length == 0) return;
+
+                if (qTable == null) qTable = new double[NUM_STATES, NUM_ACTIONS];
+
+                int stateIndex = 0;
+
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    // Προσπερνάμε την πρώτη γραμμή (Header)
+                    if (lines[i].StartsWith("State") || lines[i].Contains("Attack,Retreat,Health"))
+                        continue;
+
+                    if (stateIndex >= NUM_STATES) break;
+
+                    string[] parts = lines[i].Split(',');
+
+                    // ΠΡΟΣΟΧΗ: Το parts[0] είναι το όνομα (π.χ. "VeryClose...").
+                    // Οι αριθμοί είναι στο parts[1] (Attack) και parts[2] (Retreat).
+
+                    // Ελέγχουμε αν η γραμμή έχει αρκετά κομμάτια (Name + Actions)
+                    if (parts.Length >= NUM_ACTIONS + 1)
+                    {
+                        for (int j = 0; j < NUM_ACTIONS; j++)
+                        {
+                            // Διαβάζουμε το parts[j + 1] αντί για j
+                            double.TryParse(parts[j + 1], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out qTable[stateIndex, j]);
+                        }
+                        stateIndex++;
+                    }
+                }
+                form1.WriteAI("Q-Table Loaded (Named Rows).");
+            }
+            catch { }
+        }
+
+        private string GetStateDescription(int index)
+        {
+            // Αντίστροφη μηχανική του νέου τύπου (x3)
+            int myHpVal = index % 3;
+            int distVal = index / 3;
+
+            string distStr = "";
+            switch (distVal)
+            {
+                case 0: distStr = "VeryClose(<1m)"; break;
+                case 1: distStr = "Close(1-5m)   "; break;
+                case 2: distStr = "Medium(5-20m) "; break;
+                case 3: distStr = "Far(>20m)     "; break;
+            }
+
+            string myStr = "";
+            switch (myHpVal)
+            {
+                case 0: myStr = "Me:Hurt(NeedHP)"; break;
+                case 1: myStr = "Me:LowShield   "; break;
+                case 2: myStr = "Me:Good        "; break;
+            }
+
+            // Επιστρέφουμε μόνο τα δύο χαρακτηριστικά
+            return $"{distStr} | {myStr}";
+        }
+
+        // Οι κόμβοι που έχουν Health Packs (Bloodgulch IDs)
+
+        private Structures.FLOAT3 GetClosestHealthPackPos()
+        {
+            var myPos = form1.gameState.LocalPosition;
+            double minDist = 99999;
+            int bestNodeIndex = -1;
+
+            foreach (int nodeId in healthPackNodes)
+            {
+                // ΔΙΟΡΘΩΣΗ: Χρησιμοποιούμε το .pool αντί για .nodes
+                // Προσθέσαμε και έλεγχο για null για ασφάλεια (αν και στο Bloodgulch υπάρχουν πάντα)
+                if (form1.nav.graph.pool[nodeId] != null)
+                {
+                    var nodePos = form1.nav.graph.pool[nodeId].pos;
+
+                    double d = Navigation.Distance3D(myPos, nodePos);
+                    if (d < minDist)
+                    {
+                        minDist = d;
+                        bestNodeIndex = nodeId;
+                    }
+                }
+            }
+
+            if (bestNodeIndex != -1 && form1.nav.graph.pool[bestNodeIndex] != null)
+                return form1.nav.graph.pool[bestNodeIndex].pos;
+
+            return myPos;
         }
 
     }

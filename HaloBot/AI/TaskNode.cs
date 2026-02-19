@@ -195,7 +195,7 @@ namespace HaloBot
                     break;
 
                 case (int)AIHandler.FID.EVADE:
-                    aiHandler.form1.nav.WalkTo(evade((int)parameter),
+                    aiHandler.form1.nav.WalkTo(aiHandler.Evade((int)parameter),
                         false);
                     break;
 
@@ -330,35 +330,17 @@ namespace HaloBot
                             parameter, true);
                     break;
 
+                //Q LEARNING
+                case (int)AIHandler.FID.ENABLE_RL:
+                    // Η 'parameter' είναι double στο TaskNode.cs.
+                    // Αν στο script γράψεις !99(1), το parameter γίνεται 1.0.
+                    // Ελέγχουμε αν είναι διάφορο του μηδενός για να το κάνουμε bool (true).
+                    aiHandler.EnableRL(parameter != 0);
+                    break;
+
                 default:
                     break;
             }
-        }
-        private Structures.FLOAT3 evade(int enemyIndex)
-        {
-            // 1. Παίρνουμε τις θέσεις από το form1.gameState
-            // Σημείωση: Μέσα στο AIHandler, το 'form1' είναι προσβάσιμο απευθείας
-            var myPos = aiHandler.form1.gameState.LocalPosition;
-            var enemyPos = aiHandler.form1.gameState.PlayerPosition(enemyIndex);
-
-            // 2. Υπολογίζουμε το διάνυσμα φυγής (Εγώ - Εχθρός)
-            var escapeVector = myPos - enemyPos;
-
-            // 3. Υπολογίζουμε την απόσταση (Magnitude)
-            float dist = (float)Math.Sqrt(escapeVector.X * escapeVector.X +
-                                          escapeVector.Y * escapeVector.Y +
-                                          escapeVector.Z * escapeVector.Z);
-
-            // Ασφάλεια: Αν η απόσταση είναι 0 (είμαστε ακριβώς πάνω του), επιστρέφουμε τη θέση μας
-            if (dist <= 0) return myPos;
-
-            // 4. Προεκτείνουμε το διάνυσμα κατά 15 μέτρα
-            float retreatDistance = 15.0f;
-
-            // Τύπος: ΘέσηΜου + (Διάνυσμα * (ΑπόστασηΠουΘελω / ΤρέχουσαΑπόσταση))
-            var targetPos = myPos + (escapeVector * (retreatDistance / dist));
-
-            return targetPos;
         }
 
         public override string ToString()

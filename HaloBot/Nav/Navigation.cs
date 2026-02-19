@@ -14,7 +14,7 @@ namespace HaloBot
     {
         private const float STRAFE_SCALE = 2.5F;
 
-        private Graph graph;
+        public Graph graph;
         private MemoryReaderWriter gameState;
         private Thread walker;
 
