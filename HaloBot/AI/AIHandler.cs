@@ -343,8 +343,6 @@ namespace HaloBot
                     WriteAICrossThread($"RL Step: S={newState} A={nextAction} R={reward:F1} Eps={epsilon:F2}", true);
                 }
 
-                // 3. Εκτέλεση της Τρέχουσας Ενέργειας (Συνεχόμενα)
-                // Εκτελούμε την ενέργεια που αποφασίστηκε στο τελευταίο interval
                 ExecuteRLAction(lastActionIndex, targetIndex);
 
                 tickCounter++;
@@ -970,7 +968,6 @@ namespace HaloBot
         public Structures.FLOAT3 Evade(int enemyIndex)
         {
             // 1. Παίρνουμε τις θέσεις από το form1.gameState
-            // Σημείωση: Μέσα στο AIHandler, το 'form1' είναι προσβάσιμο απευθείας
             var myPos = form1.gameState.LocalPosition;
             var enemyPos = form1.gameState.PlayerPosition(enemyIndex);
 
@@ -1016,7 +1013,6 @@ namespace HaloBot
             form1.WriteAI("RL Disabled");
         }
 
-        // 2. Υπολογισμός Κατάστασης (Discretization)
         private int GetDiscreteState(int enemyIndex)
         {
             var myPos = form1.gameState.LocalPosition;
@@ -1039,12 +1035,10 @@ namespace HaloBot
             else
                 myHpState = 2; // GOOD
 
-            // ΝΕΟΣ ΤΥΠΟΣ: (Distance * 3) + MyState
-            // Δεν μας νοιάζει πια ο εχθρός
             return (distState * 3) + myHpState;
         }
 
-        // 3. Υπολογισμός Ανταμοιβής - ΔΕΧΕΤΑΙ enemyIndex
+
         private double CalculateReward(int enemyIndex)
         {
             double currentMyHealth = form1.gameState.LocalHealth;
@@ -1060,20 +1054,13 @@ namespace HaloBot
             double damageDealt = lastEnemyHealth - currentEnemyHP;
             double damageTaken = lastMyHealth - currentMyHP;
 
-            // Βασικό Reward (Ζημιά)
+            // Βασικό Reward (Damage)
             double reward = (damageDealt * 2.0) - (damageTaken * 1.5);
-
-            // --- DYNAMIC LIVING PENALTY ---
-            // Αντικαθιστούμε το σταθερό -1.0 με αυτό το block:
-            // reward -= 1.0;
 
             // --- ΕΙΔΙΚΟ REWARD ΓΙΑ HEALTH PACK ---
             // Αν η τελευταία ενέργεια ήταν "GoToHealth" (Index 2)
             if (lastActionIndex == 2)
             {
-                // ΔΙΟΡΘΩΣΗ: Ελέγχουμε το LocalHealth (Ζωή), όχι το Shield.
-                // Αν η ζωή είναι πεσμένη (< 0.9 σημαίνει ότι έχουμε χάσει έστω λίγο), επιβραβεύουμε.
-                // Μπορείς να βάλεις < 0.5 αν θες να πηγαίνει μόνο στα πολύ δύσκολα.
                 bool healthIncreased = currentMyHealth > (lastMyHealth + 0.1);
                 if (healthIncreased)
                 {
@@ -1084,12 +1071,16 @@ namespace HaloBot
             // Περίπτωση 1: Camping (Μακριά & Ασφαλής) -> Τεράστια Ποινή
             if (dist > 20.0 && form1.gameState.LocalShield > 0.9)
             {
-                reward -= 2.0;
+                reward -= 5.0;
+                if (form1.gameState.LocalHealth < 0.8)
+                {
+                    reward -= 5.0;
+                }
             }
             // Περίπτωση 2: Combat (Κοντά ή τραυματισμένος) -> Μικρή Ποινή
             else
             {
-                reward -= 0.2; // Μικρότερο από το παλιό 1.0 για να μην "αυτοκτονεί" εύκολα
+                reward -= 0.2;
             }
 
             // Kill / Death detection
@@ -1097,18 +1088,13 @@ namespace HaloBot
 
             if (currentEnemyHealth > lastEnemyHealth && lastEnemyHealth < 0.1)
             {
-                reward += 200.0; // Αυξήσαμε λίγο το Kill Reward για να ισοσταθμίσει τα -5αρια
+                reward += 200.0;
                 episodeEnded = true;
                 //form1.nav.Press((ushort)Navigation.DIK.DIK_R, 35, true);
-                // --- ΠΡΟΣΘΗΚΗ ΓΙΑ RECORDING (F1 ΚΑΘΕ 10 KILLS) ---
-                killCount++; // Αυξάνουμε τα kills κατά 1
+                killCount++;
 
-                // Αν τα kills διαιρούνται ακριβώς με το 10
                 if (killCount % 10 == 0)
                 {
-                    // Το 5000 είναι τα χιλιοστά του δευτερολέπτου (5 δευτερόλεπτα).
-                    // Σημείωση: Αν σου βγάλει σφάλμα ότι δεν υπάρχει το "DIK_F1", 
-                    // αντικατέστησε το (ushort)Navigation.DIK.DIK_F1 με το (ushort)0x3B
                     form1.nav.Press((ushort)Navigation.DIK.DIK_F1, 5000, true);
                     form1.WriteAI($"Scoreboard! Pressing F1 for 5 seconds.");
                 }
@@ -1135,14 +1121,12 @@ namespace HaloBot
             return reward;
         }
 
-        // 4. Εκτέλεση Ενεργειών - ΔΕΧΕΤΑΙ enemyIndex
         private void ExecuteRLAction(int actionIndex, int enemyIndex)
         {
             // 1. Στόχευση
             form1.nav.aimbot.SetTarget(enemyIndex, true);
 
             // 2. Έλεγχος: Βλέπουμε τον εχθρό; (Κόκκινο Στόχαστρο)
-            // Το HasClearShot διαβάζει τη μνήμη για να δει αν το στόχαστρο είναι κόκκινο
             bool canShoot = form1.gameState.HasClearShot;
 
             switch (actionIndex)
@@ -1168,43 +1152,26 @@ namespace HaloBot
                 case 1: // RETREAT
                     var fleePos = Evade(enemyIndex);
                     form1.nav.WalkTo(fleePos, false);
-
-                    // Και στην υποχώρηση, πυροβολούμε μόνο αν βλέπουμε
                     if (canShoot)
                     {
                         form1.nav.Click(true, 50);
                     }
                     break;
 
-                case 2: // GO TO HEALTH PACK (ΝΕΟ)
-                        // Βρίσκουμε το κοντινότερο πακέτο
+                case 2: // GO TO HEALTH PACK
                     var hpPos = GetClosestHealthPackPos();
-
-                    // Πηγαίνουμε εκεί (εδώ ίσως θες StrafeMode = false για να τρέχει πιο γρήγορα, 
-                    // αλλά αν θες να πυροβολεί καθώς πάει, άστο true).
                     form1.nav.WalkTo(hpPos, false);
-
-                    // Αν βλέπουμε εχθρό στο δρόμο, ρίχνουμε
-                    if (canShoot)
-                    {
-                        form1.nav.Click(true, 50);
-                    }
                     break;
             }
         }
         private void ManageWeaponRange(float dist)
         {
-            // Ελέγχουμε ποιο όπλο κρατάμε (True = Primary, False = Secondary)
-            // Χρησιμοποιούμε το Property που υπάρχει ήδη στο MemoryReaderWriter
             bool holdingPrimary = form1.gameState.PrimaryWeapon;
 
-            // ΚΑΝΟΝΑΣ 1: Αν είμαστε Κοντά (< 5m) θέλουμε Secondary (AR)
             if (dist < 5.0f && !holdingPrimary)
             {
-                // Πατάμε το κουμπί αλλαγής όπλου (TAB)
                 form1.nav.Press((ushort)Navigation.DIK.DIK_TAB, 35, true);
             }
-            // ΚΑΝΟΝΑΣ 2: Αν είμαστε Μακριά (> 5m) θέλουμε Primary (Pistol/Sniper)
             else if (dist >= 5.0f && holdingPrimary)
             {
                 form1.nav.Press((ushort)Navigation.DIK.DIK_TAB, 35, true);
@@ -1218,15 +1185,12 @@ namespace HaloBot
             {
                 using (StreamWriter sw = new StreamWriter("qtable.csv"))
                 {
-                    // ΠΡΟΣΘΗΚΗ: Header με State
                     sw.WriteLine("State,Attack,Retreat,Health");
 
                     for (int i = 0; i < NUM_STATES; i++)
                     {
-                        // Παίρνουμε την περιγραφή
                         string stateName = GetStateDescription(i);
 
-                        // Ξεκινάμε τη γραμμή με το όνομα
                         string line = stateName + ",";
 
                         for (int j = 0; j < NUM_ACTIONS; j++)
@@ -1259,18 +1223,11 @@ namespace HaloBot
                         continue;
 
                     if (stateIndex >= NUM_STATES) break;
-
                     string[] parts = lines[i].Split(',');
-
-                    // ΠΡΟΣΟΧΗ: Το parts[0] είναι το όνομα (π.χ. "VeryClose...").
-                    // Οι αριθμοί είναι στο parts[1] (Attack) και parts[2] (Retreat).
-
-                    // Ελέγχουμε αν η γραμμή έχει αρκετά κομμάτια (Name + Actions)
                     if (parts.Length >= NUM_ACTIONS + 1)
                     {
                         for (int j = 0; j < NUM_ACTIONS; j++)
                         {
-                            // Διαβάζουμε το parts[j + 1] αντί για j
                             double.TryParse(parts[j + 1], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out qTable[stateIndex, j]);
                         }
                         stateIndex++;
@@ -1283,7 +1240,6 @@ namespace HaloBot
 
         private string GetStateDescription(int index)
         {
-            // Αντίστροφη μηχανική του νέου τύπου (x3)
             int myHpVal = index % 3;
             int distVal = index / 3;
 
@@ -1304,11 +1260,8 @@ namespace HaloBot
                 case 2: myStr = "Me:Good        "; break;
             }
 
-            // Επιστρέφουμε μόνο τα δύο χαρακτηριστικά
             return $"{distStr} | {myStr}";
         }
-
-        // Οι κόμβοι που έχουν Health Packs (Bloodgulch IDs)
 
         private Structures.FLOAT3 GetClosestHealthPackPos()
         {
@@ -1318,8 +1271,6 @@ namespace HaloBot
 
             foreach (int nodeId in healthPackNodes)
             {
-                // ΔΙΟΡΘΩΣΗ: Χρησιμοποιούμε το .pool αντί για .nodes
-                // Προσθέσαμε και έλεγχο για null για ασφάλεια (αν και στο Bloodgulch υπάρχουν πάντα)
                 if (form1.nav.graph.pool[nodeId] != null)
                 {
                     var nodePos = form1.nav.graph.pool[nodeId].pos;

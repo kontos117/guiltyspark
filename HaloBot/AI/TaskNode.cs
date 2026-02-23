@@ -332,9 +332,6 @@ namespace HaloBot
 
                 //Q LEARNING
                 case (int)AIHandler.FID.ENABLE_RL:
-                    // Η 'parameter' είναι double στο TaskNode.cs.
-                    // Αν στο script γράψεις !99(1), το parameter γίνεται 1.0.
-                    // Ελέγχουμε αν είναι διάφορο του μηδενός για να το κάνουμε bool (true).
                     aiHandler.EnableRL(parameter != 0);
                     break;
 
